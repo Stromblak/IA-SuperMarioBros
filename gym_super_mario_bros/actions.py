@@ -2,6 +2,12 @@
 
 
 # actions for the simple run right environment
+SALTO_CORRER = [
+    ['NOOP'],
+    ['right'],
+    ['right', 'A'],
+]
+
 RIGHT_ONLY = [
     ['NOOP'],
     ['right'],
