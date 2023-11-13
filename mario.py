@@ -29,8 +29,6 @@ import cv2
 import numpy as np
 import collections
 
-
-
 # Procesamiento del Ambiente
 
 # Usar cada 4 frame
@@ -123,26 +121,6 @@ def wrap_env(env):
 
 
 
-# Replay Memory
-Experience = collections.namedtuple('Experience', field_names=['state', 'action', 'reward', 'new_state'])
-class ReplayMemory:
-	def __init__(self, max_size):
-		self.max_size = max_size
-		self.buffer = deque(maxlen=max_size)
-
-	def push(self, experience):
-		self.buffer.append(experience)
-
-	def sample(self, batch_size):
-		idxs = np.random.choice(len(self.buffer), batch_size, replace=False)
-		states, actions, rewards, next_states = zip(*[self.buffer[i] for i in idxs])
-		return np.array(states), np.array(actions), np.array(rewards), np.array(next_states)
-	
-	def __len__(self):
-		return len(self.buffer)
-	
-
-
 # DQN
 class DQN(nn.Module):
 	def __init__(self, input_shape, n_actions):
@@ -173,10 +151,8 @@ class DQN(nn.Module):
 		return self.fc(conv_out)
 
 class DQNAgent:
-	def __init__(self, env, buffer_size=100000, render = False):
+	def __init__(self, env):
 		self.env = env
-		self.render = render
-		self.replay_buffer = ReplayMemory(max_size=buffer_size)
 		self.reset()
 
 		self.distancia = 0
@@ -206,7 +182,7 @@ class DQNAgent:
 		self.state = self.env.reset()
 		
 	def play(self, eps):
-		if self.render: env.render()
+		env.render()
 	
 		# random sample action
 		action = 0
@@ -231,10 +207,6 @@ class DQNAgent:
 		elif info["time"] == self.tiempo - 30:
 			done = True
 
-
-		experience = Experience(self.state, action, reward, next_state)
-
-		self.replay_buffer.push(experience)
 		self.state = next_state
 		self.total_reward += reward
 		
@@ -252,172 +224,15 @@ class DQNAgent:
 		print("Copying to target")
 		self.target_model.load_state_dict(self.model.state_dict())
 
-
-# Entrenamiento
-def optimizarModelo(agent, tau, batch_size, gamma, update_interval):
-	if len(agent.replay_buffer) < replay_start:
-		return
-
-	# batch de experiencia
-	states, actions, rewards, next_states = agent.replay_buffer.sample(batch_size)
-
-	# cosas misticas del tensor
-	states_tensor = torch.tensor(states.astype(np.float32) / 255.0, dtype=torch.float32).to(agent.device)
-	actions_tensor = torch.tensor(actions, dtype=torch.long).to(agent.device)
-	rewards_tensor = torch.tensor(rewards, dtype=torch.float32).to(agent.device)
-	next_states_tensor = torch.tensor(next_states.astype(np.float32) / 255.0, dtype=torch.float32).to(agent.device)
-
-	# get current Q value from the training network given the current action
-	curr_Q = agent.model(states_tensor).gather(1, actions_tensor.unsqueeze(-1)).squeeze(-1)
-
-	# get expected Q value for all possible actions using the target net, and pick 
-	# the highest Qval, e = reward + gamma * Q'(s_next)
-	max_next_Q = agent.target_model(next_states_tensor).max(1)[0]
-
-	expected_Q = rewards_tensor + gamma * max_next_Q.detach()
-
-	loss = agent.loss_func(curr_Q, expected_Q)
-
-	agent.optimizer.zero_grad()
-	loss.backward()
-	agent.optimizer.step()            
-
-
-	# Soft update of the target network's weights
-	target_net_state_dict = agent.target_model.state_dict()
-	policy_net_state_dict = agent.model.state_dict()
-
-	for key in policy_net_state_dict:
-		target_net_state_dict[key] = policy_net_state_dict[key]*tau + target_net_state_dict[key]*(1-tau)
-
-	agent.target_model.load_state_dict(target_net_state_dict)
-
-
-	# Actualizar la target network
-	"""
-	if total_steps % update_inverval == 0:
-		agent.copy_to_target()
-	"""
-
-def entrenamiento(agent, 
-				  max_episodes, 
-				  writer, 
-				  expected_reward = 150, 
-				  replay_start = 16384, 
-				  batch_size = 32, 
-				  gamma = 0.99, 
-				  update_interval = 1000, 
-				  tau = 0.005,
-				  eps_start = 0.9, 
-				  eps_end = 0.05, 
-				  eps_decay = 0.999999):
-	
-	episode_rewards = []
-	eps = eps_start
-	# Total steps played 
-	total_steps = 0
-	best_mean_reward = 1000.0
-	
-	model_no = 0
-	for episode in range(max_episodes):
-		for step in count():
-			total_steps += 1
-			eps = max(eps*eps_decay, eps_end)
-
-			episode_reward = agent.play(eps)
-
-			# si episode_reward = None entonces no ha terminado
-			if episode_reward is not None:
-				episode_rewards.append(episode_reward)
-				mean_reward = np.mean(episode_rewards[-100:])
-				writer.add_scalar("epsilon", eps, total_steps)
-				writer.add_scalar("last_100_reward", mean_reward, total_steps)
-				writer.add_scalar("reward", episode_reward, total_steps)
-
-				if mean_reward > best_mean_reward and total_steps > replay_start:
-					best_mean_reward = mean_reward
-					# save the most recent 10 best models
-					torch.save(agent.model.state_dict(), "Local_DQN_Mario_no" + str(model_no))
-					print("Best mean reward updated, model saved")
-					model_no += 1
-					model_no = model_no % 10
-
-				print("Steps: %d | Episodio: %d | mean reward %.3f | epsilon %.2f" % (total_steps, episode, mean_reward, eps))
-				break
-			
-			optimizarModelo(agent, tau, batch_size, gamma, update_interval)
-
-			# Guardar el modelo
-			if total_steps % 250000 == 0:
-				torch.save(agent.model.state_dict(), "Local_DQN_Mario_snapshot")
-				print("snapshot saved")
-
-
-		if best_mean_reward >= expected_reward:
-			break
-
-
-	torch.save(agent.model.state_dict(), "models/Local_DQN_Mario_snapshot_" + str(math.floor(time.time())))
-
-	writer.close()
-	return episode_rewards
-
-
-# Ambiente
 env = gym_super_mario_bros.make('SuperMarioBros-1-1-v0')
 env = JoypadSpace(env, SALTO_CORRER) #SIMPLE_MOVEMENT
 env = wrap_env(env)
 env.reset()
 
 
-# hiperparametros
-replay_start        = 10000		# steps minimos para empezar
-replay_buffer_size  = 10000		# steps maximos que guarda 
-BATCH_SIZE          = 32		# numero de experiencias del buffer a usar
+agent = DQNAgent(env)
+agent.load_params("models\Local_DQN_Mario_snapshot_1699839468")
 
-TAU 				= 0.005		# actualizacion pasiva de la target network
-
-mum_episodes		= 10000   
-GAMMA				= 0.99
-EPS_START			= 0.9
-EPS_END				= 0.05
-EPS_DECAY 			= 0.9999975
-recompensa_termino	= 3000.0
-
-
-writer = SummaryWriter('runs/' + str(math.floor(time.time())) + '-mario_1_1-' + str(EPS_DECAY) + '-' + str(replay_buffer_size))
-
-agent = DQNAgent(env, replay_buffer_size, render=True)
-#agent.load_params("Local_DQN_Mario_snapshot_1")
-
-episode_rewards = entrenamiento(agent, 
-							max_episodes	= mum_episodes, 
-							writer			= writer, 
-							expected_reward	= recompensa_termino, 
-							replay_start	= replay_start, 
-							batch_size		= BATCH_SIZE, 
-							gamma			= GAMMA, 
-							eps_start		= EPS_START, 
-							eps_end			= EPS_END, 
-							eps_decay		= EPS_DECAY,
-							tau				= TAU)
-
-
-
-
-def grafico(nombre, rewards):
-    n = 100
-    smoothed_rewards = []
-    for i in range(len(rewards)):
-        start = max(0, i - n)
-        end = min(len(rewards), i + n + 1)
-        smoothed_rewards.append(sum(rewards[start:end]) / (end - start))
-
-    plt.plot(smoothed_rewards, label=nombre)
-    plt.ylabel('Recompensa')
-    plt.xlabel('Episodio')
-    plt.legend()
-    
-    plt.savefig(nombre + ".png", format='png')
-
-grafico("DQN", episode_rewards)
+for episode in range(10):
+    for step in count():
+        episode_reward = agent.play(0.05)
