@@ -144,9 +144,9 @@ class ReplayMemory:
 
 
 # DQN
-class DQN(nn.Module):
+class DDQN(nn.Module):
 	def __init__(self, input_shape, n_actions):
-		super(DQN, self).__init__()
+		super(DDQN, self).__init__()
 
 		self.conv = nn.Sequential(
 			nn.Conv2d(input_shape[0], 32, kernel_size=8, stride=4),
@@ -172,7 +172,7 @@ class DQN(nn.Module):
 		conv_out = self.conv(x).view(x.size()[0], -1)
 		return self.fc(conv_out)
 
-class DQNAgent:
+class DDQNAgent:
 	def __init__(self, env, buffer_size=100000, render = False):
 		self.env = env
 		self.render = render
@@ -181,8 +181,8 @@ class DQNAgent:
 
 		self.device = "cuda" if torch.cuda.is_available() else "cpu"
 
-		self.policy = DQN(env.observation_space.shape, env.action_space.n).to(self.device)
-		self.target = DQN(env.observation_space.shape, env.action_space.n).to(self.device)
+		self.policy = DDQN(env.observation_space.shape, env.action_space.n).to(self.device)
+		self.target = DDQN(env.observation_space.shape, env.action_space.n).to(self.device)
 		self.target.load_state_dict(self.policy.state_dict())
 
 		self.target.eval()	# para que no actualize los pesos el optimizador ?
@@ -367,7 +367,7 @@ def main():
 
 	writer = SummaryWriter('runs/' + str(math.floor(time.time())) + '-mario_1_1-' + str(EPS_DECAY) + '-' + str(BUFFER_SIZE))
 
-	agent = DQNAgent(env, BUFFER_SIZE, render=True)
+	agent = DDQNAgent(env, BUFFER_SIZE, render=True)
 	#agent.load_params("Local_DQN_Mario_snapshot_1")
 
 	episode_rewards = entrenamiento(agent, 

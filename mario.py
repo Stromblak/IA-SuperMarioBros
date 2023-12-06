@@ -33,7 +33,7 @@ import collections
 
 # Usar cada 4 frame
 
-from DDQN import wrap_env, DQNAgent
+from DDQN import wrap_env, DDQNAgent
 
 
 # DQN
@@ -43,7 +43,7 @@ env = wrap_env(env)
 env.reset()
 
 
-agent = DQNAgent(env, render=True)
+agent = DDQNAgent(env, render=True)
 agent.load_params("pesos")
 
 for episode in range(10):
