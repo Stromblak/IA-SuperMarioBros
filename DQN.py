@@ -62,7 +62,7 @@ class MaxAndSkipEnv(gym.Wrapper):
 class ProcessFrame128(gym.ObservationWrapper):
 	def __init__(self, env=None):
 		super(ProcessFrame128, self).__init__(env)
-		self.observation_space = gym.spaces.Box(low=0, high=255, shape=(128, 128, 1), dtype=np.uint8)
+		self.observation_space = gym.spaces.Box(low=0, high=255, shape=(84, 84, 1), dtype=np.uint8)
 
 	def observation(self, obs):
 		return ProcessFrame128.process(obs)
@@ -75,8 +75,8 @@ class ProcessFrame128(gym.ObservationWrapper):
 			assert False, "Unknown resolution."
 
 		img = img[:, :, 0] * 0.299 + img[:, :, 1] * 0.587 + img[:, :, 2] * 0.114
-		resized_screen = cv2.resize(img, (128, 128), interpolation=cv2.INTER_AREA)
-		x_t = np.reshape(resized_screen, [128, 128, 1])
+		resized_screen = cv2.resize(img, (84, 84), interpolation=cv2.INTER_AREA)
+		x_t = np.reshape(resized_screen, [84, 84, 1])
 		return x_t.astype(np.uint8)
 
 class BufferWrapper(gym.ObservationWrapper):
@@ -212,24 +212,29 @@ class DQNAgent:
 		action = 0
 		if(np.random.random() < eps):
 			action = self.env.action_space.sample()
+
 		# choose action with highest Q value
 		else:
 			state_tensor = torch.FloatTensor(self.state.astype(np.float32) / 255.0).unsqueeze(0).to(self.device)
-			# state_tensor = torch.FloatTensor(self.state).unsqueeze(0).to(self.device)
 			qvals_tensor = self.model(state_tensor)
 			action = int(np.argmax(qvals_tensor.cpu().detach().numpy()))
 
 		
 		next_state, reward, done, info = self.env.step(action)
 		
-
-		#reward = info["x_pos"] + info["y_pos"] + reward
+		reward = info["x_pos"] + info["y_pos"] + reward
+		"""
 		if info["x_pos"] > self.distancia:
 			self.distancia = info["x_pos"]
 			self.tiempo = info["time"]
 		
 		elif info["time"] == self.tiempo - 30:
 			done = True
+		"""
+
+
+
+
 
 
 		experience = Experience(self.state, action, reward, next_state)
@@ -244,6 +249,9 @@ class DQNAgent:
 			return res_reward
 		else:
 			return None
+		
+
+
 	
 	def load_params(self, file_name):
 		print(self.model.load_state_dict(torch.load(file_name)))
@@ -267,8 +275,11 @@ def optimizarModelo(agent, tau, batch_size, gamma, update_interval):
 	rewards_tensor = torch.tensor(rewards, dtype=torch.float32).to(agent.device)
 	next_states_tensor = torch.tensor(next_states.astype(np.float32) / 255.0, dtype=torch.float32).to(agent.device)
 
+
 	# get current Q value from the training network given the current action
 	curr_Q = agent.model(states_tensor).gather(1, actions_tensor.unsqueeze(-1)).squeeze(-1)
+
+	
 
 	# get expected Q value for all possible actions using the target net, and pick 
 	# the highest Qval, e = reward + gamma * Q'(s_next)
@@ -300,17 +311,17 @@ def optimizarModelo(agent, tau, batch_size, gamma, update_interval):
 	"""
 
 def entrenamiento(agent, 
-				  max_episodes, 
-				  writer, 
-				  expected_reward = 150, 
-				  replay_start = 16384, 
-				  batch_size = 32, 
-				  gamma = 0.99, 
-				  update_interval = 1000, 
-				  tau = 0.005,
-				  eps_start = 0.9, 
-				  eps_end = 0.05, 
-				  eps_decay = 0.999999):
+				max_episodes, 
+				writer, 
+				expected_reward = 150, 
+				replay_start = 16384, 
+				batch_size = 32, 
+				gamma = 0.99, 
+				update_interval = 1000, 
+				tau = 0.005,
+				eps_start = 0.9, 
+				eps_end = 0.05, 
+				eps_decay = 0.999999):
 	
 	episode_rewards = []
 	eps = eps_start
@@ -322,7 +333,10 @@ def entrenamiento(agent,
 	for episode in range(max_episodes):
 		for step in count():
 			total_steps += 1
+
 			eps = max(eps*eps_decay, eps_end)
+			#eps = EPS_END + (EPS_START - EPS_END) * math.exp(-1. * step / EPS_DECAY)
+
 
 			episode_reward = agent.play(eps)
 
@@ -342,7 +356,7 @@ def entrenamiento(agent,
 					model_no += 1
 					model_no = model_no % 10
 
-				print("Steps: %d | Episodio: %d | mean reward %.3f | epsilon %.2f" % (total_steps, episode, mean_reward, eps))
+				print("Episodio: %d | mean reward %.3f | Steps: %d |  epsilon %.2f" % (total_steps, episode, mean_reward, eps))
 				break
 			
 			optimizarModelo(agent, tau, batch_size, gamma, update_interval)
@@ -363,7 +377,10 @@ def entrenamiento(agent,
 	return episode_rewards
 
 
-# Ambiente
+
+
+# ----------------------------------- Ambiente ------------------------------------
+
 env = gym_super_mario_bros.make('SuperMarioBros-1-1-v0')
 env = JoypadSpace(env, SALTO_CORRER) #SIMPLE_MOVEMENT
 env = wrap_env(env)
@@ -379,7 +396,7 @@ TAU 				= 0.005		# actualizacion pasiva de la target network
 
 mum_episodes		= 10000   
 GAMMA				= 0.99
-EPS_START			= 0.9
+EPS_START			= 0.8
 EPS_END				= 0.05
 EPS_DECAY 			= 0.9999975
 recompensa_termino	= 3000.0
@@ -406,18 +423,24 @@ episode_rewards = entrenamiento(agent,
 
 
 def grafico(nombre, rewards):
-    n = 100
-    smoothed_rewards = []
-    for i in range(len(rewards)):
-        start = max(0, i - n)
-        end = min(len(rewards), i + n + 1)
-        smoothed_rewards.append(sum(rewards[start:end]) / (end - start))
+	n = 100
+	smoothed_rewards = []
+	for i in range(len(rewards)):
+		start = max(0, i - n)
+		end = min(len(rewards), i + n + 1)
+		smoothed_rewards.append(sum(rewards[start:end]) / (end - start))
 
-    plt.plot(smoothed_rewards, label=nombre)
-    plt.ylabel('Recompensa')
-    plt.xlabel('Episodio')
-    plt.legend()
-    
-    plt.savefig(nombre + ".png", format='png')
+	plt.plot(smoothed_rewards, label=nombre)
+	plt.ylabel('Recompensa')
+	plt.xlabel('Episodio')
+	plt.legend()
+	
+	plt.savefig(nombre + ".png", format='png')
+
+	file = open('rewards.txt','w')
+	for r in rewards:
+		file.write(r + "\n")
+
+	file.close()
 
 grafico("DQN", episode_rewards)
