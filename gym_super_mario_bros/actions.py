@@ -8,6 +8,14 @@ SALTO_CORRER = [
     ['right', 'A'],
 ]
 
+SALTO_CORRER_AMBOS = [
+    ['NOOP'],
+    ['right'],
+    ['right', 'A'],
+    ['left'],
+    ['left', 'A'],
+]
+
 RIGHT_ONLY = [
     ['NOOP'],
     ['right'],

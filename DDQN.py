@@ -1,26 +1,21 @@
-from gym_super_mario_bros import SuperMarioBrosEnv
 from nes_py.wrappers import JoypadSpace
 import gym_super_mario_bros
-from gym_super_mario_bros.actions import SIMPLE_MOVEMENT, SALTO_CORRER
+from gym_super_mario_bros.actions import SIMPLE_MOVEMENT, SALTO_CORRER, SALTO_CORRER_AMBOS
 
-import random
 import numpy as np
 from collections import deque
 
 from torchsummary import summary
 import torch
 import torch.nn as nn
-import torch.autograd as autograd
 import torch.nn.functional as F
 import torch.optim as optim
 import gym
 import math
 from itertools import count
 import time
-import sys
 import collections
 
-from torch.utils.tensorboard import SummaryWriter
 import matplotlib.pyplot as plt
 import time
 
@@ -29,7 +24,8 @@ import cv2
 import numpy as np
 import collections
 
-
+from torch.utils.tensorboard import SummaryWriter
+# tensorboard --logdir=runs
 
 # Procesamiento del Ambiente
 
@@ -142,7 +138,6 @@ class ReplayMemory:
 		return len(self.buffer)
 	
 
-
 # DQN
 class DDQN(nn.Module):
 	def __init__(self, input_shape, n_actions):
@@ -173,33 +168,38 @@ class DDQN(nn.Module):
 		return self.fc(conv_out)
 
 class DDQNAgent:
-	def __init__(self, env, buffer_size=100000, render = False):
+	def __init__(self, env, render = True):
 		self.env = env
-		self.render = render
-		self.replay_buffer = ReplayMemory(max_size=buffer_size)
+		self.replay_buffer = ReplayMemory(max_size=BUFFER_SIZE)
 		self.reset()
+		self.render = render
 
 		self.device = "cuda" if torch.cuda.is_available() else "cpu"
 
 		self.policy = DDQN(env.observation_space.shape, env.action_space.n).to(self.device)
 		self.target = DDQN(env.observation_space.shape, env.action_space.n).to(self.device)
 		self.target.load_state_dict(self.policy.state_dict())
-
 		self.target.eval()	# para que no actualize los pesos el optimizador ?
 
 		# self.optimizer = torch.optim.RMSprop(self.policy.parameters(), lr = 1e-4 )
-		# self.optimizer = optim.Adam(self.policy.parameters(), lr=0.learning_rate)
-		self.optimizer = optim.AdamW(self.policy.parameters(), lr=learning_rate, amsgrad=True)
+		# self.optimizer = optim.Adam(self.policy.parameters(), lr=learning_rate)
+		self.optimizer = optim.AdamW(self.policy.parameters(), lr=LEARNING_RATE, amsgrad=True)
+		self.loss_fn = nn.SmoothL1Loss()
 
-		self.loss_func = nn.SmoothL1Loss()
+		# global
+		self.envs = []
+		for i in range(4):
+			env = gym_super_mario_bros.make("SuperMarioBros-1-" + str(i+1) + "-v0")
+			env = JoypadSpace(env, SALTO_CORRER) #SALTO_CORRER_AMBOS
+			env = wrap_env(env)
+			env.reset()
+			self.envs.append(env)
 	
 	def reset(self):
 		self.total_reward = 0.0
 		self.state = self.env.reset()
 		
 	def play(self, eps):
-		if self.render: self.env.render()
-	
 		# random sample action
 		if np.random.random() < eps:
 			action = self.env.action_space.sample()
@@ -218,10 +218,44 @@ class DDQNAgent:
 		self.state = next_state
 		self.total_reward += reward
 		
+
+		if self.render:
+			self.env.render()
+
 		if done:
 			res_reward = self.total_reward
 			self.reset()
 			return res_reward
+		else:
+			return None
+		
+	def playGlobal(self, eps, ambiente):
+		# epsilon-greedy
+		if np.random.random() < eps:
+			action = ambiente.action_space.sample()
+
+		else:
+			state_tensor = torch.FloatTensor(self.state.astype(np.float32) / 255.0).unsqueeze(0).to(self.device)
+			qvals_tensor = self.policy(state_tensor)
+			action = int(np.argmax(qvals_tensor.cpu().detach().numpy()))
+
+		
+		next_state, reward, done, _ = ambiente.step(action)
+
+		experience = Experience(self.state, action, reward, next_state, done)
+		self.replay_buffer.push(experience)
+		self.state = next_state
+		self.total_reward += reward
+		
+		if self.render:
+			ambiente.render()
+
+		if done:
+			res_reward = self.total_reward
+			self.total_reward = 0.0
+
+			return res_reward
+		
 		else:
 			return None
 
@@ -251,20 +285,14 @@ class DDQNAgent:
 
 
 		# Compute the loss using the Huber loss function
-		loss = F.smooth_l1_loss(current_q_values, target_q_values)
-	
-
+		loss = self.loss_fn(current_q_values, target_q_values)
 		self.optimizer.zero_grad()
 		loss.backward()
 		self.optimizer.step()
 		self.update_target()
-
-
-	def load_params(self, file_name):
-		print(self.policy.load_state_dict(torch.load(file_name)))
 	
 	def update_target(self):
-		metodo = 0
+		metodo = 1
 
 		if metodo == 0:
 			# Soft update of the target network's weights
@@ -280,124 +308,126 @@ class DDQNAgent:
 			for target_param, policy_param in zip(self.target.parameters(), self.policy.parameters()):
 				target_param.data.copy_(TAU * policy_param.data + (1.0 - TAU) * target_param.data)	
 
+	def load_params(self, file_name):
+		print(self.policy.load_state_dict(torch.load(file_name)))
+
+		self.target.load_state_dict(self.policy.state_dict())
+		self.target.eval()
 
 
-# Entrenamiento
-
-def entrenamiento(agent, writer, expected_reward = 2000, replay_start = 16384):
+# Bucle entrenamiento
+def entrenamiento(agent: DDQNAgent):
 	episode_rewards = []
 	eps = EPS_START
 	# Total steps played 
 	total_steps = 0
 	best_mean_reward = 1000.0
 	
-	model_no = 0
+	writer = SummaryWriter('runs/' + str(math.floor(time.time())))
+
+	# global
+	"""
+	envs = []
+	for i in range(4):
+		env = gym_super_mario_bros.make("SuperMarioBros-1-" + str(i+1) + "-v0")
+		env = JoypadSpace(env, SALTO_CORRER) #SALTO_CORRER_AMBOS
+		env = wrap_env(env)
+		env.reset()
+		envs.append(env)"""
+
 	for episode in range(1, EPISODES + 1):
-		for step in count():
+		ambiente = ((episode-1) % 3) + 1
+		if ambiente == 3: ambiente = 4
+		env = gym_super_mario_bros.make("SuperMarioBros-1-" + str(ambiente) + "-v0")
+		env = JoypadSpace(env, SALTO_CORRER) #SALTO_CORRER_AMBOS
+		env = wrap_env(env)
+		agent.state = env.reset()
+
+		for _ in count():
 			total_steps += 1
 			
 			eps = max(eps*EPS_DECAY, EPS_END)
 			#eps = EPS_END + (EPS_START - EPS_END) * math.exp(-1. * step / EPS_DECAY)
 
-			episode_reward = agent.play(eps)
+			episode_reward = agent.playGlobal(eps, env)
 
 			# si episode_reward = None entonces no ha terminado
 			if episode_reward is not None:
 				episode_rewards.append(episode_reward)
 				mean_reward = np.mean(episode_rewards[-100:])
-				writer.add_scalar("epsilon", eps, total_steps)
-				writer.add_scalar("last_100_reward", mean_reward, total_steps)
-				writer.add_scalar("reward", episode_reward, total_steps)
 
-				if mean_reward > best_mean_reward and total_steps > replay_start:
+				if mean_reward > best_mean_reward:
 					best_mean_reward = mean_reward
-					# save the most recent 10 best models
-					torch.save(agent.model.state_dict(), "Local_DQN_Mario_no" + str(model_no) + "_" + str(mean_reward))
+					torch.save(agent.policy.state_dict(), "Local_DQN_Mario_" + str(mean_reward))
 					print("Best mean reward updated, model saved")
-					model_no += 1
-					model_no = model_no % 10
 					
 
 				print("Episodio: %d | mean reward %.3f | Steps: %d | epsilon %.2f" % (episode, mean_reward, total_steps,  eps))
 				break
 			
 			agent.optimizarModelo()
-	
+
+		env.close()
+
 		# Guardar el modelo
-		if episode % 1000 == 0 and episode > 0:
-			torch.save(agent.model.state_dict(), "Local_DQN_Mario_snapshot_" + str(episode))
+		if episode % 1000 == 0:
+			torch.save(agent.policy.state_dict(), "Local_DQN_Mario_snapshot_" + str(episode))
 			print("snapshot saved")	
 
-		if best_mean_reward >= expected_reward:
-			break
+		writer.add_scalar("episode_reward", episode_reward, episode)
+		writer.add_scalar("mean_reward", mean_reward, episode)
 
 
-	torch.save(agent.model.state_dict(), "models/Local_DQN_Mario_snapshot_" + str(math.floor(time.time())))
+	torch.save(agent.policy.state_dict(), "models/Local_DQN_Mario_snapshot_" + str(math.floor(time.time())))
 
 	writer.close()
 	return episode_rewards
 
+def grafico(nombre, rewards):
+	n = 100
+	smoothed_rewards = []
+	for i in range(len(rewards)):
+		start = max(0, i - n)
+		end = min(len(rewards), i + n + 1)
+		smoothed_rewards.append(sum(rewards[start:end]) / (end - start))
+
+	plt.plot(smoothed_rewards, label=nombre)
+	plt.ylabel('Recompensa')
+	plt.xlabel('Episodio')
+	plt.legend()
+	plt.savefig(nombre + ".png", format='png')
 
 
 
 # ----------------------------------- Ambiente ------------------------------------
 BATCH_SIZE          = 32			# numero de experiencias del buffer a usar
-replay_start        = BATCH_SIZE	# steps minimos para empezar  #10000		
+replay_start        = BATCH_SIZE	# steps minimos para empezar	
 BUFFER_SIZE  		= 30000			# steps maximos que guarda 
 
 TAU 				= 0.005			# actualizacion pasiva de la target network
 
 EPISODES			= 10000   
 GAMMA				= 0.90
-EPS_START			= 1.0
-EPS_END				= 0.05
-EPS_DECAY 			= 0.999999
-recompensa_termino	= 3000.0
-learning_rate		= 0.00025 		# 1e-4
+EPS_START			= 0.0
+EPS_END				= 0.00
+EPS_DECAY 			= 0.999998
+LEARNING_RATE		= 0.00025 		# 1e-4
+
 
 def main():
 	env = gym_super_mario_bros.make('SuperMarioBros-1-1-v0')
-	env = JoypadSpace(env, SALTO_CORRER) #SIMPLE_MOVEMENT
+	env = JoypadSpace(env, SALTO_CORRER) #SALTO_CORRER_AMBOS
 	env = wrap_env(env)
 	env.reset()
 
-
 	# hiperparametros
 
+	agent = DDQNAgent(env, render=False)
+	agent.load_params("pesos2")
 
-	writer = SummaryWriter('runs/' + str(math.floor(time.time())) + '-mario_1_1-' + str(EPS_DECAY) + '-' + str(BUFFER_SIZE))
+	episode_rewards = entrenamiento(agent)
 
-	agent = DDQNAgent(env, BUFFER_SIZE, render=True)
-	#agent.load_params("Local_DQN_Mario_snapshot_1")
+	grafico("DDQN", episode_rewards)
 
-	episode_rewards = entrenamiento(agent, 
-								writer			= writer, 
-								expected_reward	= recompensa_termino, 
-								replay_start	= replay_start)
-
-
-
-
-	def grafico(nombre, rewards):
-		n = 100
-		smoothed_rewards = []
-		for i in range(len(rewards)):
-			start = max(0, i - n)
-			end = min(len(rewards), i + n + 1)
-			smoothed_rewards.append(sum(rewards[start:end]) / (end - start))
-
-		plt.plot(smoothed_rewards, label=nombre)
-		plt.ylabel('Recompensa')
-		plt.xlabel('Episodio')
-		plt.legend()
-		
-		plt.savefig(nombre + ".png", format='png')
-
-		file = open('rewards.txt','w')
-		for r in rewards:
-			file.write(str(r) + "\n")
-
-		file.close()
-
-	grafico("DQN", episode_rewards)
-	
+if __name__ == "__main__":
+   main()
