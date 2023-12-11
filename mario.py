@@ -34,20 +34,17 @@ from DDQN import wrap_env, DDQNAgent
 
 # DQN
 env = gym_super_mario_bros.make('SuperMarioBros-v0')
-env = JoypadSpace(env, SALTO_CORRER)
 env = wrap_env(env)
 env.reset()
 
 agent = DDQNAgent(env)
 
-agent.load_params("DDQN-DERECHA-1-MUNDO\Local_DQN_Mario_snapshot_9000")
+agent.load_params("DDQN_DERECHA-1-1\Local_DQN_Mario_no7_2033.99")
 
 
 
 for episode in range(1, 5):
-    ambiente = (episode-1) % 4
-    env = gym_super_mario_bros.make("SuperMarioBros-1-" + str(ambiente+1) + "-v0")
-    env = JoypadSpace(env, SALTO_CORRER)
+    env = gym_super_mario_bros.make("SuperMarioBros-1-1-v0")
     env = wrap_env(env)
     agent.state = env.reset()
     
@@ -58,4 +55,4 @@ for episode in range(1, 5):
     
     env.close()
 
-    
+        

@@ -18,20 +18,19 @@ import collections
 
 import matplotlib.pyplot as plt
 import time
-
+import os
 
 import cv2
 import numpy as np
 import collections
 
 from torch.utils.tensorboard import SummaryWriter
-# tensorboard --logdir=runs
+
 
 # Procesamiento del Ambiente
-
-# Usar cada 4 frame
 class MaxAndSkipEnv(gym.Wrapper):
 	def __init__(self, env=None, skip=4):
+		"""Return only every `skip`-th frame"""
 		super(MaxAndSkipEnv, self).__init__(env)
 		# most recent raw observations (for max pooling across time steps)
 		self._obs_buffer = collections.deque(maxlen=2)
@@ -50,18 +49,25 @@ class MaxAndSkipEnv(gym.Wrapper):
 		return max_frame, total_reward, done, info
 
 	def reset(self):
+		"""Clear past frame buffer and init to first obs"""
 		self._obs_buffer.clear()
 		obs = self.env.reset()
 		self._obs_buffer.append(obs)
 		return obs
 
-class ProcessFrame128(gym.ObservationWrapper):
+class ProcessFrame84(gym.ObservationWrapper):
+	"""
+	Downsamples image to 84x84
+	Greyscales image
+
+	Returns numpy array
+	"""
 	def __init__(self, env=None):
-		super(ProcessFrame128, self).__init__(env)
+		super(ProcessFrame84, self).__init__(env)
 		self.observation_space = gym.spaces.Box(low=0, high=255, shape=(84, 84, 1), dtype=np.uint8)
 
 	def observation(self, obs):
-		return ProcessFrame128.process(obs)
+		return ProcessFrame84.process(obs)
 
 	@staticmethod
 	def process(frame):
@@ -72,12 +78,28 @@ class ProcessFrame128(gym.ObservationWrapper):
 
 		img = img[:, :, 0] * 0.299 + img[:, :, 1] * 0.587 + img[:, :, 2] * 0.114
 		resized_screen = cv2.resize(img, (84, 110), interpolation=cv2.INTER_AREA)
-		x_t = np.reshape(resized_screen[18:102, :], [84, 84, 1])
+		x_t = resized_screen[18:102, :]
+		x_t = np.reshape(x_t, [84, 84, 1])
+
 		return x_t.astype(np.uint8)
 
+class ImageToPyTorch(gym.ObservationWrapper):
+	def __init__(self, env):
+		super(ImageToPyTorch, self).__init__(env)
+		old_shape = self.observation_space.shape
+		self.observation_space = gym.spaces.Box(low=0.0, high=1.0, shape=(old_shape[-1], old_shape[0], old_shape[1]),
+												dtype=np.float32)
+
+	def observation(self, observation):
+		return np.moveaxis(observation, 2, 0)
+
+class ScaledFloatFrame(gym.ObservationWrapper):
+	"""Normalize pixel values in frame --> 0 to 1"""
+	def observation(self, obs):
+		return np.array(obs).astype(np.float32) / 255.0
+
 class BufferWrapper(gym.ObservationWrapper):
-	# def __init__(self, env, n_steps, dtype=np.float32):
-	def __init__(self, env, n_steps, dtype=np.uint8):
+	def __init__(self, env, n_steps, dtype=np.float32):
 		super(BufferWrapper, self).__init__(env)
 		self.dtype = dtype
 		old_space = env.observation_space
@@ -93,30 +115,14 @@ class BufferWrapper(gym.ObservationWrapper):
 		self.buffer[-1] = observation
 		return self.buffer
 
-class ImageToPyTorch(gym.ObservationWrapper):
-	def __init__(self, env):
-		super(ImageToPyTorch, self).__init__(env)
-		old_shape = self.observation_space.shape
-		self.observation_space = gym.spaces.Box(low=0, high=255, shape=(old_shape[-1], 
-								old_shape[0], old_shape[1]), dtype=np.uint8)
-		# self.observation_space = gym.spaces.Box(low=0.0, high=1.0, shape=(old_shape[-1], 
-		#                         old_shape[0], old_shape[1]), dtype=np.float32)        
-
-	def observation(self, observation):
-		return np.moveaxis(observation, 2, 0)
-
-class ScaledFloatFrame(gym.ObservationWrapper):
-	def observation(self, obs):
-		return np.array(obs).astype(np.uint8) 
-
 def wrap_env(env):
 	env = MaxAndSkipEnv(env)
-	env = ProcessFrame128(env)
+	env = ProcessFrame84(env)
 	env = ImageToPyTorch(env)
 	env = BufferWrapper(env, 4)
 	env = ScaledFloatFrame(env)
+	env = JoypadSpace(env, SALTO_CORRER)
 	return env
-
 
 
 # Replay Memory
@@ -206,7 +212,7 @@ class DDQNAgent:
 
 		# choose action with highest Q value
 		else:
-			state_tensor = torch.FloatTensor(self.state.astype(np.float32) / 255.0).unsqueeze(0).to(self.device)
+			state_tensor = torch.FloatTensor(self.state.astype(np.float32)).unsqueeze(0).to(self.device)
 			qvals_tensor = self.policy(state_tensor)
 			action = int(np.argmax(qvals_tensor.cpu().detach().numpy()))
 
@@ -235,7 +241,7 @@ class DDQNAgent:
 			action = ambiente.action_space.sample()
 
 		else:
-			state_tensor = torch.FloatTensor(self.state.astype(np.float32) / 255.0).unsqueeze(0).to(self.device)
+			state_tensor = torch.FloatTensor(self.state.astype(np.float32)).unsqueeze(0).to(self.device)
 			qvals_tensor = self.policy(state_tensor)
 			action = int(np.argmax(qvals_tensor.cpu().detach().numpy()))
 
@@ -260,16 +266,16 @@ class DDQNAgent:
 			return None
 
 	def optimizarModelo(self):
-		if len(self.replay_buffer) < replay_start:
+		if len(self.replay_buffer) < REPLAY_START:
 			return
 
 		# batch de experiencia y optimizacion de los datos
 		states, actions, rewards, next_states, dones = self.replay_buffer.sample(BATCH_SIZE)
 
-		states_tensor 		= torch.tensor(states.astype(np.float32) / 255.0, dtype=torch.float32).to(self.device)
+		states_tensor 		= torch.tensor(states.astype(np.float32), dtype=torch.float32).to(self.device)
 		actions_tensor 		= torch.tensor(actions, dtype=torch.long).to(self.device)
 		rewards_tensor 		= torch.tensor(rewards, dtype=torch.float32).to(self.device)
-		next_states_tensor 	= torch.tensor(next_states.astype(np.float32) / 255.0, dtype=torch.float32).to(self.device)
+		next_states_tensor 	= torch.tensor(next_states.astype(np.float32), dtype=torch.float32).to(self.device)
 		dones_tensor 		= torch.BoolTensor(dones).float().to(self.device)
 
 
@@ -292,21 +298,8 @@ class DDQNAgent:
 		self.update_target()
 	
 	def update_target(self):
-		metodo = 1
-
-		if metodo == 0:
-			# Soft update of the target network's weights
-			target_net_state_dict = self.target.state_dict()
-			policy_net_state_dict = self.policy.state_dict()
-
-			for key in policy_net_state_dict:
-				target_net_state_dict[key] = policy_net_state_dict[key]*TAU + target_net_state_dict[key]*(1-TAU)
-
-			self.target.load_state_dict(target_net_state_dict)
-
-		elif metodo == 1:
-			for target_param, policy_param in zip(self.target.parameters(), self.policy.parameters()):
-				target_param.data.copy_(TAU * policy_param.data + (1.0 - TAU) * target_param.data)	
+		for target_param, policy_param in zip(self.target.parameters(), self.policy.parameters()):
+			target_param.data.copy_(TAU * policy_param.data + (1.0 - TAU) * target_param.data)	
 
 	def load_params(self, file_name):
 		print(self.policy.load_state_dict(torch.load(file_name)))
@@ -315,119 +308,129 @@ class DDQNAgent:
 		self.target.eval()
 
 
+
+def evaluacion(episode, agent, writer, last_Greddy, best_Greddy, carpeta):
+	if episode%10 != 0:
+		return last_Greddy, best_Greddy
+
+	recompensasGreedy = []
+	for l in MAPAS:
+		env = gym_super_mario_bros.make("SuperMarioBros-1-" + str(l) + "-v0")
+		env = wrap_env(env)
+		agent.state = env.reset()
+			
+		while True:
+			episode_reward = agent.playGlobal(0, env)
+
+			if episode_reward is not None:
+				recompensasGreedy.append(episode_reward)
+				break
+
+		env.close()
+	
+	promedio = np.mean(recompensasGreedy)
+	writer.add_scalar("greedy", promedio, int(episode/10))
+
+	if promedio > best_Greddy:
+		best_Greddy = promedio
+
+		if os.path.exists(last_Greddy):
+			os.remove(last_Greddy)
+
+		last_Greddy = carpeta + "DQN_G_" + str(promedio)
+		torch.save(agent.policy.state_dict(), last_Greddy)
+		
+
+	return last_Greddy, best_Greddy
+
 # Bucle entrenamiento
 def entrenamiento(agent: DDQNAgent):
 	episode_rewards = []
 	eps = EPS_START
-	# Total steps played 
 	total_steps = 0
-	best_mean_reward = 1000.0
 	
-	writer = SummaryWriter('runs/' + str(math.floor(time.time())))
+	carpeta = str(math.floor(time.time())) + "/"
+	writer = SummaryWriter(carpeta)
 
-	# global
-	"""
-	envs = []
-	for i in range(4):
-		env = gym_super_mario_bros.make("SuperMarioBros-1-" + str(i+1) + "-v0")
-		env = JoypadSpace(env, SALTO_CORRER) #SALTO_CORRER_AMBOS
-		env = wrap_env(env)
-		env.reset()
-		envs.append(env)"""
+	best_mean_reward = 0
+	last_DQN = ""
 
-	for episode in range(1, EPISODES + 1):
-		ambiente = ((episode-1) % 3) + 1
-		if ambiente == 3: ambiente = 4
-		env = gym_super_mario_bros.make("SuperMarioBros-1-" + str(ambiente) + "-v0")
-		env = JoypadSpace(env, SALTO_CORRER) #SALTO_CORRER_AMBOS
+	best_Greddy = 0
+	last_Greddy = ""
+	
+	for episode in range(EPISODES):
+		last_Greddy, best_Greddy = evaluacion(episode, agent, writer, last_Greddy, best_Greddy, carpeta)
+
+		env = gym_super_mario_bros.make("SuperMarioBros-1-" + str(MAPAS[episode % len(MAPAS)]) + "-v0")
 		env = wrap_env(env)
 		agent.state = env.reset()
 
-		for _ in count():
+		# entrenamiento real
+		while True:
 			total_steps += 1
 			
 			eps = max(eps*EPS_DECAY, EPS_END)
-			#eps = EPS_END + (EPS_START - EPS_END) * math.exp(-1. * step / EPS_DECAY)
-
 			episode_reward = agent.playGlobal(eps, env)
+			agent.optimizarModelo()
 
 			# si episode_reward = None entonces no ha terminado
 			if episode_reward is not None:
 				episode_rewards.append(episode_reward)
-				mean_reward = np.mean(episode_rewards[-100:])
+				mean_reward = np.mean(episode_rewards[-10:])
 
 				if mean_reward > best_mean_reward:
 					best_mean_reward = mean_reward
-					torch.save(agent.policy.state_dict(), "Local_DQN_Mario_" + str(mean_reward))
+
+					if os.path.exists(last_DQN):
+						os.remove(last_DQN)
+
+					last_DQN = carpeta + "DQN_" + str(mean_reward)
+					torch.save(agent.policy.state_dict(), last_DQN)
 					print("Best mean reward updated, model saved")
 					
-
-				print("Episodio: %d | mean reward %.3f | Steps: %d | epsilon %.2f" % (episode, mean_reward, total_steps,  eps))
+				print("Episodio: %d | mean reward %.3f | steps: %d | epsilon %.3f" % (episode, mean_reward, total_steps,  eps))
 				break
 			
-			agent.optimizarModelo()
-
 		env.close()
-
-		# Guardar el modelo
-		if episode % 1000 == 0:
-			torch.save(agent.policy.state_dict(), "Local_DQN_Mario_snapshot_" + str(episode))
-			print("snapshot saved")	
 
 		writer.add_scalar("episode_reward", episode_reward, episode)
 		writer.add_scalar("mean_reward", mean_reward, episode)
+		writer.add_scalar("epsilon", eps, episode)
 
-
-	torch.save(agent.policy.state_dict(), "models/Local_DQN_Mario_snapshot_" + str(math.floor(time.time())))
 
 	writer.close()
 	return episode_rewards
 
-def grafico(nombre, rewards):
-	n = 100
-	smoothed_rewards = []
-	for i in range(len(rewards)):
-		start = max(0, i - n)
-		end = min(len(rewards), i + n + 1)
-		smoothed_rewards.append(sum(rewards[start:end]) / (end - start))
-
-	plt.plot(smoothed_rewards, label=nombre)
-	plt.ylabel('Recompensa')
-	plt.xlabel('Episodio')
-	plt.legend()
-	plt.savefig(nombre + ".png", format='png')
 
 
 
 # ----------------------------------- Ambiente ------------------------------------
-BATCH_SIZE          = 32			# numero de experiencias del buffer a usar
-replay_start        = BATCH_SIZE	# steps minimos para empezar	
-BUFFER_SIZE  		= 30000			# steps maximos que guarda 
+BATCH_SIZE          = 32				# numero de experiencias del buffer a usar
+REPLAY_START        = BATCH_SIZE	    # steps minimos para empezar	
+BUFFER_SIZE  		= 100000			# steps maximos que guarda 
 
-TAU 				= 0.005			# actualizacion pasiva de la target network
+TAU 				= 0.01				# actualizacion pasiva de la target network
 
 EPISODES			= 10000   
 GAMMA				= 0.90
-EPS_START			= 0.0
-EPS_END				= 0.00
-EPS_DECAY 			= 0.999998
+EPS_START			= 1
+EPS_END				= 0.001
+EPS_DECAY 			= 0.9999
 LEARNING_RATE		= 0.00025 		# 1e-4
+MAPAS = [4]
+
 
 
 def main():
 	env = gym_super_mario_bros.make('SuperMarioBros-1-1-v0')
-	env = JoypadSpace(env, SALTO_CORRER) #SALTO_CORRER_AMBOS
 	env = wrap_env(env)
 	env.reset()
 
 	# hiperparametros
-
 	agent = DDQNAgent(env, render=False)
-	agent.load_params("pesos2")
+	#agent.load_params("DQN_1523.14_1")
+	entrenamiento(agent)
 
-	episode_rewards = entrenamiento(agent)
-
-	grafico("DDQN", episode_rewards)
 
 if __name__ == "__main__":
    main()
