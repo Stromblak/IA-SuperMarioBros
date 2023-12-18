@@ -302,7 +302,7 @@ class DDQNAgent:
 			target_param.data.copy_(TAU * policy_param.data + (1.0 - TAU) * target_param.data)	
 
 	def load_params(self, file_name):
-		print(self.policy.load_state_dict(torch.load(file_name)))
+		print(self.policy.load_state_dict(torch.load(file_name, map_location=torch.device(self.device))))
 
 		self.target.load_state_dict(self.policy.state_dict())
 		self.target.eval()
@@ -371,7 +371,8 @@ def entrenamiento(agent: DDQNAgent):
 			
 			eps = max(eps*EPS_DECAY, EPS_END)
 			episode_reward = agent.playGlobal(eps, env)
-			agent.optimizarModelo()
+			
+			#agent.optimizarModelo()
 
 			# si episode_reward = None entonces no ha terminado
 			if episode_reward is not None:
@@ -405,7 +406,7 @@ def entrenamiento(agent: DDQNAgent):
 
 
 # ----------------------------------- Ambiente ------------------------------------
-BATCH_SIZE          = 32				# numero de experiencias del buffer a usar
+BATCH_SIZE          = 128				# numero de experiencias del buffer a usar
 REPLAY_START        = BATCH_SIZE	    # steps minimos para empezar	
 BUFFER_SIZE  		= 100000			# steps maximos que guarda 
 
@@ -414,8 +415,8 @@ TAU 				= 0.01				# actualizacion pasiva de la target network
 EPISODES			= 10000   
 GAMMA				= 0.90
 EPS_START			= 1
-EPS_END				= 0.001
-EPS_DECAY 			= 0.9999
+EPS_END				= 0.05
+EPS_DECAY 			= 0.999
 LEARNING_RATE		= 0.00025 		# 1e-4
 MAPAS = [4]
 

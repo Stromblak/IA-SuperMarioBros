@@ -1,54 +1,35 @@
-from gym_super_mario_bros import SuperMarioBrosEnv
-from nes_py.wrappers import JoypadSpace
 import gym_super_mario_bros
-from gym_super_mario_bros.actions import SIMPLE_MOVEMENT, SALTO_CORRER
-
-import random
-import numpy as np
-from collections import deque
-
-from torchsummary import summary
-import torch
-import torch.nn as nn
-import torch.autograd as autograd
-import torch.nn.functional as F
-import torch.optim as optim
-import gym
-import math
-from itertools import count
-import time
-import sys
-import collections
-
-from torch.utils.tensorboard import SummaryWriter
-import matplotlib.pyplot as plt
-import time
-
-import cv2
-import numpy as np
-import collections
-
-
 from DDQN import wrap_env, DDQNAgent
-
+import sys
+import pygame
 
 # DQN
 env = gym_super_mario_bros.make('SuperMarioBros-v0')
 env = wrap_env(env)
 env.reset()
 
+
 agent = DDQNAgent(env)
 
-agent.load_params("DDQN_DERECHA-1-1\Local_DQN_Mario_no7_2033.99")
+if sys.argv[1] == "1":
+    agent.load_params("pesos1")
+    nivel = "SuperMarioBros-1-1-v0"
 
+elif sys.argv[1] == "4":
+    agent.load_params("1702259439-[1,4]\DQN_G_2006.0")
+    nivel = "SuperMarioBros-1-4-v0"    
 
-
+pygame.init()
+clock = pygame.time.Clock()
 for episode in range(1, 5):
-    env = gym_super_mario_bros.make("SuperMarioBros-1-1-v0")
+    env = gym_super_mario_bros.make(nivel)
     env = wrap_env(env)
     agent.state = env.reset()
     
-    for step in count():
+    while True:
+        
+        clock.tick(30)
+
         env.render()
         if agent.playGlobal(0, env):
             break
